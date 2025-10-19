@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { LogOut, Plus } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import TaskList from "@/components/TaskList";
 import TaskModal from "@/components/TaskModal";
+import { supabase } from "@/integrations/supabase/client";
 
 export interface Task {
   id: string;
@@ -20,18 +21,67 @@ const Tasks = () => {
   const [filter, setFilter] = useState<"all" | "todo" | "inprogress" | "done">("all");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
-  const [tasks, setTasks] = useState<Task[]>([
-    {
-      id: "1",
-      title: "Welcome to TaskFlow!",
-      description: "Click on a task to edit it, or add a new one using the + button",
-      status: "todo",
-      dueDate: new Date().toISOString().split("T")[0],
-    },
-  ]);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [userId, setUserId] = useState<string | null>(null);
 
-  const handleLogout = () => {
-    localStorage.removeItem("taskflow_user");
+  useEffect(() => {
+    // Check authentication
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!session) {
+        navigate("/login");
+      } else {
+        setUserId(session.user.id);
+        fetchTasks(session.user.id);
+      }
+    });
+
+    // Listen for auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!session) {
+        navigate("/login");
+      } else {
+        setUserId(session.user.id);
+        fetchTasks(session.user.id);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, [navigate]);
+
+  const fetchTasks = async (uid: string) => {
+    try {
+      const { data, error } = await supabase
+        .from("tasks")
+        .select("*")
+        .eq("user_id", uid)
+        .order("created_at", { ascending: false });
+
+      if (error) throw error;
+      
+      // Transform database format to component format
+      const transformedTasks: Task[] = (data || []).map((task: any) => ({
+        id: task.id,
+        title: task.title,
+        description: task.description || "",
+        status: (task.status || "todo") as "todo" | "inprogress" | "done",
+        dueDate: task.due_date,
+      }));
+      
+      setTasks(transformedTasks);
+    } catch (error: any) {
+      toast({
+        title: "Error loading tasks",
+        description: error.message,
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
     toast({
       title: "Logged out",
       description: "Come back soon!",
@@ -49,37 +99,93 @@ const Tasks = () => {
     setIsModalOpen(true);
   };
 
-  const handleDeleteTask = (taskId: string) => {
-    setTasks(tasks.filter((task) => task.id !== taskId));
-    toast({
-      title: "Task deleted",
-      description: "Task has been removed",
-    });
-  };
+  const handleDeleteTask = async (taskId: string) => {
+    try {
+      const { error } = await supabase
+        .from("tasks")
+        .delete()
+        .eq("id", taskId);
 
-  const handleSaveTask = (taskData: Omit<Task, "id">) => {
-    if (editingTask) {
-      setTasks(
-        tasks.map((task) =>
-          task.id === editingTask.id ? { ...taskData, id: editingTask.id } : task
-        )
-      );
+      if (error) throw error;
+
+      setTasks(tasks.filter((task) => task.id !== taskId));
       toast({
-        title: "Task updated",
-        description: "Your task has been updated successfully",
+        title: "Task deleted",
+        description: "Task has been removed",
       });
-    } else {
-      const newTask: Task = {
-        ...taskData,
-        id: Date.now().toString(),
-      };
-      setTasks([...tasks, newTask]);
+    } catch (error: any) {
       toast({
-        title: "Task created",
-        description: "Your new task has been added",
+        title: "Error deleting task",
+        description: error.message,
+        variant: "destructive",
       });
     }
-    setIsModalOpen(false);
+  };
+
+  const handleSaveTask = async (taskData: Omit<Task, "id">) => {
+    if (!userId) return;
+
+    try {
+      if (editingTask) {
+        // Update existing task
+        const { error } = await supabase
+          .from("tasks")
+          .update({
+            title: taskData.title,
+            description: taskData.description,
+            status: taskData.status,
+            due_date: taskData.dueDate,
+          })
+          .eq("id", editingTask.id);
+
+        if (error) throw error;
+
+        setTasks(
+          tasks.map((task) =>
+            task.id === editingTask.id ? { ...taskData, id: editingTask.id } : task
+          )
+        );
+        toast({
+          title: "Task updated",
+          description: "Your task has been updated successfully",
+        });
+      } else {
+        // Create new task
+        const { data, error } = await supabase
+          .from("tasks")
+          .insert({
+            user_id: userId,
+            title: taskData.title,
+            description: taskData.description,
+            status: taskData.status,
+            due_date: taskData.dueDate,
+          })
+          .select()
+          .single();
+
+        if (error) throw error;
+
+        const newTask: Task = {
+          id: data.id,
+          title: data.title,
+          description: data.description || "",
+          status: (data.status || "todo") as "todo" | "inprogress" | "done",
+          dueDate: data.due_date,
+        };
+        setTasks([newTask, ...tasks]);
+        toast({
+          title: "Task created",
+          description: "Your new task has been added",
+        });
+      }
+      setIsModalOpen(false);
+    } catch (error: any) {
+      toast({
+        title: "Error saving task",
+        description: error.message,
+        variant: "destructive",
+      });
+    }
   };
 
   const filteredTasks = tasks.filter((task) => {
@@ -130,11 +236,17 @@ const Tasks = () => {
         </div>
 
         {/* Task List */}
-        <TaskList
-          tasks={filteredTasks}
-          onEdit={handleEditTask}
-          onDelete={handleDeleteTask}
-        />
+        {loading ? (
+          <div className="text-center py-8 text-muted-foreground">
+            Loading tasks...
+          </div>
+        ) : (
+          <TaskList
+            tasks={filteredTasks}
+            onEdit={handleEditTask}
+            onDelete={handleDeleteTask}
+          />
+        )}
 
         {/* Floating Action Button */}
         <Button

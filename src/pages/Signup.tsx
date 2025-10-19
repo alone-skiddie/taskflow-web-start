@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -6,14 +6,24 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
 import { Eye, EyeOff, Lock, Mail, User } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { supabase } from "@/integrations/supabase/client";
 
 const Signup = () => {
   const [fullname, setFullname] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const { toast } = useToast();
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) {
+        navigate("/tasks");
+      }
+    });
+  }, [navigate]);
 
   const getPasswordStrength = (pass: string) => {
     if (pass.length === 0) return { strength: 0, text: "" };
@@ -25,22 +35,56 @@ const Signup = () => {
 
   const passwordStrength = getPasswordStrength(password);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (fullname && email && password) {
-      localStorage.setItem("taskflow_user", JSON.stringify({ email, fullname }));
-      toast({
-        title: "Account created!",
-        description: "Welcome to TaskFlow",
-      });
-      navigate("/tasks");
-    } else {
+    if (!fullname || !email || !password) {
       toast({
         title: "Signup failed",
         description: "Please fill in all fields",
         variant: "destructive",
       });
+      return;
+    }
+
+    if (password.length < 6) {
+      toast({
+        title: "Weak password",
+        description: "Password must be at least 6 characters",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const { error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            full_name: fullname,
+          },
+          emailRedirectTo: `${window.location.origin}/tasks`,
+        },
+      });
+
+      if (error) throw error;
+
+      toast({
+        title: "Account created!",
+        description: "Welcome to TaskFlow",
+      });
+      navigate("/tasks");
+    } catch (error: any) {
+      toast({
+        title: "Signup failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -130,8 +174,12 @@ const Signup = () => {
               )}
             </div>
 
-            <Button type="submit" className="w-full bg-accent hover:bg-accent/90">
-              Sign Up
+            <Button 
+              type="submit" 
+              className="w-full bg-accent hover:bg-accent/90"
+              disabled={loading}
+            >
+              {loading ? "Creating account..." : "Sign Up"}
             </Button>
           </form>
         </CardContent>
